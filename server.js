@@ -8,21 +8,29 @@ const LocalStrategy = require('passport-local').Strategy;
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
+// ... existing imports ...
 const app = express();
-// OLD: const PORT = 3000;
-const PORT = process.env.PORT || 3000; // NEW: Lets the cloud decide the port
+const PORT = process.env.PORT || 3000;
 
-// --- MONGODB ---
-// OLD LINE (Delete this):
-// mongoose.connect('mongodb://127.0.0.1:27017/expense_tracker')
-
-// NEW LINE (Paste this):
+// === PASTE THIS DEBUG BLOCK ===
 const mongoURI = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/expense_tracker';
+
+console.log("------------------------------------------------");
+console.log("DEBUG: Checking Database Connection...");
+if (!process.env.MONGO_URL) {
+    console.log("DEBUG: ❌ MONGO_URL variable is MISSING in Render!");
+    console.log("DEBUG: Falling back to Localhost (This will fail on cloud)");
+} else {
+    console.log("DEBUG: ✅ MONGO_URL variable FOUND!");
+    // We print only the first 15 chars to check if it looks right (hiding password)
+    console.log("DEBUG: Value starts with: " + process.env.MONGO_URL.substring(0, 15) + "...");
+}
+console.log("------------------------------------------------");
 
 mongoose.connect(mongoURI)
     .then(() => console.log('✅ Connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
-
+// ... rest of your code ...
 // --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
     username: { type: String, unique: true, required: true },
