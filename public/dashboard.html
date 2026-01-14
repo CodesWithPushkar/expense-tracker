@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Expense Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #f3f4f6; }
+        .card { background: white; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+    </style>
+</head>
+<body class="text-gray-800">
+
+    <nav class="bg-white shadow-sm p-4 flex justify-between items-center sticky top-0 z-50">
+        <h1 class="text-xl font-bold text-blue-600 flex items-center gap-2">
+            <i class="ph ph-wallet"></i> Expense Tracker
+        </h1>
+        <div class="flex items-center gap-4">
+             <div class="relative group">
+                <button class="flex items-center gap-2 font-semibold text-gray-700 bg-gray-100 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition">
+                    <span id="current-group-name">Select Group</span>
+                    <i class="ph ph-caret-down"></i>
+                </button>
+                <div class="absolute right-0 top-full mt-2 w-48 bg-white border rounded-lg shadow-lg hidden group-hover:block p-1 z-50">
+                    <div id="group-list-dropdown" class="border-b mb-1 pb-1"></div>
+                    <button id="btn-add-group" class="w-full text-left px-3 py-2 text-blue-600 hover:bg-blue-50 rounded text-sm font-semibold">
+                        <i class="ph ph-plus"></i> Create / Join New
+                    </button>
+                </div>
+            </div>
+            <a href="/reports.html" class="px-3 py-2 bg-blue-100 text-blue-700 rounded-lg font-semibold hover:bg-blue-200 transition text-sm">
+                <i class="ph ph-chart-bar"></i> Reports
+            </a>
+             <a href="/categories.html" class="px-3 py-2 bg-purple-100 text-purple-700 rounded-lg font-semibold hover:bg-purple-200 transition text-sm">
+                <i class="ph ph-tag"></i> Categories
+            </a>
+            <a href="/history.html" class="px-3 py-2 bg-yellow-100 text-yellow-700 rounded-lg font-semibold hover:bg-yellow-200 transition text-sm">
+                <i class="ph ph-clock-counter-clockwise"></i> History
+            </a>
+            <a href="/auth/logout" class="text-sm text-red-500 hover:text-red-700 font-medium">Logout</a>
+        </div>
+    </nav>
+
+    <div class="container mx-auto p-6 max-w-6xl">
+        <div id="group-banner" class="bg-blue-600 text-white p-4 rounded-xl shadow-md mb-8 flex justify-between items-center hidden">
+            <div>
+                <h2 id="group-name-display" class="text-2xl font-bold">Group Name</h2>
+                <p class="text-blue-100 text-sm">Group Code: <span id="group-code-display" class="font-mono bg-blue-700 px-2 py-1 rounded select-all">CODE</span></p>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-1 space-y-6">
+                <div class="card p-6">
+                    <h2 class="text-xl font-bold mb-4">Add Expense</h2>
+                    <form id="expense-form" class="space-y-4">
+                        <input type="hidden" id="edit-expense-id">
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                            <input type="text" id="desc" placeholder="Dinner, Uber, etc." class="w-full border rounded-lg px-3 py-2" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+                            <input type="number" id="amount" step="0.01" placeholder="0.00" class="w-full border rounded-lg px-3 py-2" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                            <select id="category-select" class="w-full border rounded-lg px-3 py-2 bg-gray-50"></select>
+                        </div>
+                        
+                        <div class="border-t pt-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Split Between:</label>
+                            <div id="split-checkboxes" class="grid grid-cols-2 gap-2 text-sm"></div>
+                        </div>
+
+                        <button type="submit" id="btn-submit-expense" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">
+                            Add Expense
+                        </button>
+                        <button type="button" id="btn-cancel-edit" class="w-full bg-gray-300 text-gray-700 font-bold py-2 rounded-lg hover:bg-gray-400 transition hidden">
+                            Cancel Edit
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2 space-y-6">
+                <div class="card p-6 min-h-[500px]">
+                    <h2 class="text-xl font-bold mb-4">Group Transactions</h2>
+                    <div id="transaction-list" class="space-y-3">
+                        <p class="text-gray-500 text-center mt-10">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="group-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-center">
+            <h2 class="text-2xl font-bold mb-2">Join or Create Group</h2>
+            <div class="flex border-b mb-6">
+                <button id="tab-join" class="w-1/2 pb-2 border-b-2 border-blue-600 font-bold text-blue-600">Join Existing</button>
+                <button id="tab-create" class="w-1/2 pb-2 text-gray-500 hover:text-blue-600">Create New</button>
+            </div>
+            <form id="join-group-form" class="space-y-4">
+                <input type="text" id="join-code" placeholder="Enter Group Code" class="w-full border p-3 rounded-lg text-center uppercase" required>
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700">Join Group</button>
+            </form>
+            <form id="create-group-form" class="space-y-4 hidden">
+                <input type="text" id="create-name" placeholder="Group Name" class="w-full border p-3 rounded-lg" required>
+                <input type="text" id="create-code" placeholder="Create Code" class="w-full border p-3 rounded-lg text-center uppercase" required>
+                <button type="submit" class="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700">Create & Join</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

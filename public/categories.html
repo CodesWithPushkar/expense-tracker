@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Categories - Expense Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #f3f4f6; }
+        .icon-option.selected { border: 2px solid #3b82f6; background-color: #eff6ff; }
+        .color-option.selected { ring: 2px; ring-offset: 2px; ring-color: #3b82f6; transform: scale(1.1); }
+    </style>
+</head>
+<body class="text-gray-800">
+
+    <nav class="bg-white shadow-sm p-4 flex justify-between items-center sticky top-0 z-50">
+        <a href="/dashboard.html" class="text-gray-500 hover:text-blue-600 flex items-center gap-1 font-medium">
+            <i class="ph ph-arrow-left"></i> Back to Dashboard
+        </a>
+        <h1 class="text-xl font-bold text-blue-600">Manage Categories</h1>
+        <div class="w-10"></div> </nav>
+
+    <div class="container mx-auto p-6 max-w-4xl grid grid-cols-1 lg:grid-cols-2 gap-8">
+        
+        <div class="bg-white p-6 rounded-xl shadow-md h-fit">
+            <h2 class="text-xl font-bold mb-4">Add New Category</h2>
+            <form id="category-form" class="space-y-4">
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Category Name</label>
+                    <input type="text" id="cat-name" placeholder="e.g. Internet, Party" class="w-full border rounded-lg px-3 py-2" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Choose Icon</label>
+                    <div class="grid grid-cols-6 gap-2" id="icon-grid">
+                        </div>
+                    <input type="hidden" id="selected-icon" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Choose Color</label>
+                    <div class="flex gap-3" id="color-grid">
+                        </div>
+                    <input type="hidden" id="selected-color" required>
+                </div>
+
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">
+                    Save Category
+                </button>
+            </form>
+        </div>
+
+        <div class="bg-white p-6 rounded-xl shadow-md">
+            <h2 class="text-xl font-bold mb-4">Your Categories</h2>
+            <ul id="category-list" class="space-y-3">
+                <p class="text-center text-gray-400">Loading...</p>
+            </ul>
+        </div>
+    </div>
+
+    <script src="categories.js"></script>
+</body>
+</html>
