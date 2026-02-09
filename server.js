@@ -2,153 +2,139 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const session = require('express-session');
-const MongoStore = require('connect-mongo').default || require('connect-mongo');
+const MongoStore = require('connect-mongo');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const bcrypt = require('bcryptjs');
-const path = require('path');
-const cors = require('cors'); // Added for App communication
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// === DATABASE CONNECTION ===
+// === DB CONNECT ===
 const mongoURI = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/expense_tracker';
 mongoose.connect(mongoURI)
     .then(() => console.log('✅ Connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// ==========================================
-// 1. UPDATED SCHEMAS (Admin, Apples, etc.)
-// ==========================================
-
+// === MODELS ===
 const userSchema = new mongoose.Schema({
-    username: { type: String, unique: true, required: true },
+    username: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    isAdmin: { type: Boolean, default: false }, // 🔧 God Mode
-    isBanned: { type: Boolean, default: false } // 🚫 Ban Hammer
+    isAdmin: { type: Boolean, default: false },
+    isBanned: { type: Boolean, default: false }
 });
 const User = mongoose.model('User', userSchema);
 
 const groupSchema = new mongoose.Schema({
     name: String,
-    groupCode: { type: String, unique: true, required: true },
-    isRestricted: { type: Boolean, default: false }, // 🔒 Port 1008 logic
+    groupCode: { type: String, required: true, unique: true },
+    isRestricted: { type: Boolean, default: false },
     members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    pendingMembers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // ⏳ Waiting for approval
+    pendingMembers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 });
 const Group = mongoose.model('Group', groupSchema);
-
-const categorySchema = new mongoose.Schema({
-    name: String, icon: String, color: String,
-    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' }
-});
-const Category = mongoose.model('Category', categorySchema);
 
 const expenseSchema = new mongoose.Schema({
     description: String,
     amount: Number,
+    category: String,
     date: { type: Date, default: Date.now },
-    categoryName: String,
-    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' },
     paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    splitBetween: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    
-    // 🍎 THE APPLE FEATURE (Inventory)
-    isConsumable: { type: Boolean, default: false }, 
-    totalQuantity: { type: Number, default: 1 },     // Bought 5 Apples
-    consumedQuantity: { type: Number, default: 0 }   // Ate 2 Apples
+    groupCode: String,
+    isConsumable: { type: Boolean, default: false },
+    totalQuantity: { type: Number, default: 1 },
+    consumedQuantity: { type: Number, default: 0 }
 });
 const Expense = mongoose.model('Expense', expenseSchema);
 
-const activityLogSchema = new mongoose.Schema({
-    action: String,
-    description: String,
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' },
-    date: { type: Date, default: Date.now }
-});
-const ActivityLog = mongoose.model('ActivityLog', activityLogSchema);
-
-// ==========================================
-// 2. MIDDLEWARE & AUTH CONFIG
-// ==========================================
-
-// Enable CORS so your Mobile App can talk to this Server
-app.use(cors({
-    origin: true, // Allow all origins (for mobile app testing)
-    credentials: true
-}));
-
-app.use(express.static(path.join(__dirname, 'public')));
+// === MIDDLEWARE ===
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
 app.use(session({
-    secret: 'super_secret_key_change_this',
+    secret: 'super_secret_key_123',
     resave: false,
     saveUninitialized: false,
     store: MongoStore.create({ mongoUrl: mongoURI }),
-    cookie: { maxAge: 1000 * 60 * 60 * 24 * 30 } // 30 Days
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } 
 }));
-
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Passport Logic
+// === PASSPORT ===
 passport.use(new LocalStrategy(async (username, password, done) => {
     try {
         const user = await User.findOne({ username });
         if (!user) return done(null, false, { message: 'User not found' });
-        if (user.isBanned) return done(null, false, { message: '🚫 You are BANNED.' });
-        
+        if (user.isBanned) return done(null, false, { message: 'You are BANNED.' });
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return done(null, false, { message: 'Incorrect password' });
-        
         return done(null, user);
     } catch (err) { return done(err); }
 }));
 passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser((id, done) => User.findById(id).then(user => done(null, user)));
+passport.deserializeUser(async (id, done) => {
+    try { const user = await User.findById(id); done(null, user); } catch (e) { done(e); }
+});
 
-// Middleware to check if logged in
+// === HELPERS ===
 const ensureAuth = (req, res, next) => {
     if (req.isAuthenticated()) return next();
-    res.status(401).json({ error: 'Not authorized' });
+    res.status(401).json({ error: "Not Authorized" });
+};
+const ensureAdmin = (req, res, next) => {
+    if (req.isAuthenticated() && req.user.isAdmin) return next();
+    res.status(403).json({ error: "Admins Only" });
 };
 
-// ==========================================
-// 3. AUTH ROUTES (Smart Registration)
-// ==========================================
+// === AUTH ROUTES ===
 
-// Register & CREATE Group (Admin)
+// 1. GET USER INFO (Used by AuthContext)
+app.get('/api/user', (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ user: null });
+    // Find User's Group
+    Group.findOne({ members: req.user._id }).then(group => {
+        res.json({ 
+            user: {
+                ...req.user.toObject(),
+                groupCode: group ? group.groupCode : null
+            } 
+        });
+    });
+});
+
+// 2. LOGIN
+app.post('/auth/login', passport.authenticate('local'), (req, res) => {
+    res.json({ success: true, user: req.user });
+});
+
+// 3. LOGOUT
+app.post('/auth/logout', (req, res) => {
+    req.logout(() => { res.json({ success: true }); });
+});
+
+// 4. REGISTER + CREATE GROUP
 app.post('/auth/register-group', async (req, res) => {
     const { username, password, groupCode } = req.body;
     try {
-        if (!username || !password || !groupCode) return res.status(400).json({ error: "Missing fields" });
         if (await User.findOne({ username })) return res.status(400).json({ error: "Username taken" });
-        if (await Group.findOne({ groupCode })) return res.status(400).json({ error: "Group Code exists" });
+        if (await Group.findOne({ groupCode })) return res.status(400).json({ error: "Group exists" });
 
         const hashedPassword = await bcrypt.hash(password, 10);
         const newUser = new User({ username, password: hashedPassword, isAdmin: true });
         await newUser.save();
 
         const newGroup = new Group({ 
-            name: groupCode + "'s House", 
-            groupCode, 
-            members: [newUser._id],
-            isRestricted: false // Default open, can change later
+            name: groupCode + "'s House", groupCode, members: [newUser._id] 
         });
         await newGroup.save();
 
-        req.login(newUser, (err) => {
-            if (err) return res.status(500).json({ error: "Login failed" });
-            res.json({ success: true, user: newUser, group: newGroup });
-        });
+        req.login(newUser, (err) => res.json({ success: true, user: newUser }));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Register & JOIN Group (Member)
+// 5. REGISTER + JOIN GROUP
 app.post('/auth/join-group', async (req, res) => {
     const { username, password, groupCode } = req.body;
     try {
@@ -163,127 +149,63 @@ app.post('/auth/join-group', async (req, res) => {
         if (group.isRestricted) {
             group.pendingMembers.push(newUser._id);
             await group.save();
-            return res.json({ success: true, msg: "Request sent to Admin!" });
-        } else {
-            group.members.push(newUser._id);
-            await group.save();
-            req.login(newUser, (err) => {
-                if (err) return res.status(500).json({ error: "Login failed" });
-                res.json({ success: true, user: newUser, group });
-            });
+            return res.json({ success: true, msg: "Approval Pending" });
         }
+
+        group.members.push(newUser._id);
+        await group.save();
+        req.login(newUser, (err) => res.json({ success: true, user: newUser }));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/auth/login', passport.authenticate('local'), (req, res) => res.json({ success: true, user: req.user }));
-app.post('/auth/logout', (req, res) => { req.logout(() => res.json({ success: true })); });
+// === API ROUTES ===
 
-app.get('/api/user', ensureAuth, (req, res) => res.json({ user: req.user }));
-
-// ==========================================
-// 4. CORE API ROUTES
-// ==========================================
-
-// Get Expenses
+// GET EXPENSES
 app.get('/api/expenses', ensureAuth, async (req, res) => {
-    // Find groups the user is in
-    const groups = await Group.find({ members: req.user._id });
-    const groupIds = groups.map(g => g._id);
+    // 1. Find user's group
+    const group = await Group.findOne({ members: req.user._id });
+    if (!group) return res.json([]);
 
-    const expenses = await Expense.find({ group: { $in: groupIds } })
+    // 2. Find expenses for that group
+    const expenses = await Expense.find({ groupCode: group.groupCode })
         .populate('paidBy', 'username')
         .sort({ date: -1 });
     res.json(expenses);
 });
 
-// Create Expense (Handles Apples/Inventory too)
+// POST EXPENSE
 app.post('/api/expenses', ensureAuth, async (req, res) => {
-    const { description, amount, groupCode, isConsumable, totalQuantity } = req.body;
-    
-    const group = await Group.findOne({ groupCode, members: req.user._id });
-    if (!group) return res.status(403).json({ error: "Group not found or Access Denied" });
+    const group = await Group.findOne({ members: req.user._id });
+    if (!group) return res.status(400).json({ error: "No Group" });
 
     const newExpense = new Expense({
-        description, 
-        amount, 
-        group: group._id, 
+        ...req.body,
         paidBy: req.user._id,
-        splitBetween: group.members,
-        isConsumable: isConsumable || false,
-        totalQuantity: totalQuantity || 1,
-        consumedQuantity: 0
+        groupCode: group.groupCode
     });
     await newExpense.save();
-    
-    // Log it
-    await new ActivityLog({ action: 'CREATED', description: `Added ${description}`, user: req.user._id, group: group._id }).save();
-    
     res.json(newExpense);
 });
 
-// 🍎 CONSUME ITEM (Eat an Apple)
-app.post('/api/expenses/consume/:id', ensureAuth, async (req, res) => {
-    const expense = await Expense.findById(req.params.id);
-    if (!expense || !expense.isConsumable) return res.status(400).json({ error: "Not a consumable item" });
+// === ADMIN ROUTES ===
 
-    if (expense.consumedQuantity < expense.totalQuantity) {
-        expense.consumedQuantity += 1;
-        await expense.save();
-        
-        await new ActivityLog({ 
-            action: 'CONSUMED', 
-            description: `Ate 1 ${expense.description} (${expense.totalQuantity - expense.consumedQuantity} left)`, 
-            user: req.user._id, 
-            group: expense.group 
-        }).save();
-        
-        return res.json({ success: true, expense });
-    } else {
-        return res.status(400).json({ error: "None left!" });
-    }
+// GET USERS (For User Management Screen)
+app.get('/api/group/members', ensureAuth, async (req, res) => {
+    const group = await Group.findOne({ members: req.user._id }).populate('members', 'username isAdmin isBanned');
+    res.json(group ? group.members : []);
 });
 
-// ==========================================
-// 5. ADMIN ROUTES (The "God Mode")
-// ==========================================
-
-const ensureAdmin = (req, res, next) => {
-    if (req.isAuthenticated() && req.user.isAdmin) return next();
-    res.status(403).json({ error: "Admins Only" });
-};
-
-// Toggle "Port 1008" Mode (Restricted Access)
-app.post('/api/admin/toggle-restriction', ensureAdmin, async (req, res) => {
-    const { groupCode, restricted } = req.body;
-    const group = await Group.findOneAndUpdate({ groupCode }, { isRestricted: restricted }, { new: true });
-    res.json(group);
-});
-
-// Approve Pending Member
-app.post('/api/admin/approve-user', ensureAdmin, async (req, res) => {
-    const { userId, groupCode } = req.body;
-    const group = await Group.findOne({ groupCode });
-    
-    group.pendingMembers = group.pendingMembers.filter(id => id.toString() !== userId);
-    group.members.push(userId);
-    await group.save();
-    
-    res.json({ success: true, msg: "User Approved" });
-});
-
-// Ban User
+// BAN USER
 app.post('/api/admin/ban-user', ensureAdmin, async (req, res) => {
-    const { userId } = req.body;
-    await User.findByIdAndUpdate(userId, { isBanned: true });
-    res.json({ success: true, msg: "User Banned" });
+    await User.findByIdAndUpdate(req.body.userId, { isBanned: true });
+    res.json({ success: true });
 });
 
-// Force Password Reset
+// RESET PASSWORD
 app.post('/api/admin/reset-password', ensureAdmin, async (req, res) => {
-    const { userId, newPassword } = req.body;
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await User.findByIdAndUpdate(userId, { password: hashedPassword });
-    res.json({ success: true, msg: "Password Reset" });
+    const hashed = await bcrypt.hash(req.body.newPassword, 10);
+    await User.findByIdAndUpdate(req.body.userId, { password: hashed });
+    res.json({ success: true });
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
