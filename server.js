@@ -11,6 +11,8 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// === DB CONNECT ===
+// Uses Render's Environment Variable OR Localhost
 const mongoURI = process.env.MONGO_URL || 'mongodb://127.0.0.1:27017/expense_tracker';
 mongoose.connect(mongoURI).then(async () => {
     console.log('✅ Connected to MongoDB');
@@ -75,6 +77,7 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// === PASSPORT CONFIG ===
 passport.use(new LocalStrategy(async (username, password, done) => {
     try {
         const user = await User.findOne({ username });
@@ -103,18 +106,18 @@ const ensureAdmin = (req, res, next) => {
 
 app.get('/api/user', (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ user: null });
+    // Use findById directly (No getGroup helper needed)
     Group.findById(req.user.activeGroup).then(group => {
         res.json({ user: { ...req.user.toObject(), groupCode: group ? group.groupCode : null } });
     });
 });
 
-// SELF-HEALING LOGIN (Fixes old users)
+// SELF-HEALING LOGIN
 app.post('/auth/login', passport.authenticate('local'), async (req, res) => {
     if (!req.user.activeGroup && req.user.joinedGroups && req.user.joinedGroups.length > 0) {
         req.user.activeGroup = req.user.joinedGroups[0];
         await req.user.save();
     } 
-    // Fallback for very old users without joinedGroups
     else if (!req.user.activeGroup) {
         const group = await Group.findOne({ members: req.user._id });
         if (group) {
@@ -128,7 +131,7 @@ app.post('/auth/login', passport.authenticate('local'), async (req, res) => {
 
 app.post('/auth/logout', (req, res) => req.logout(() => res.json({ success: true })));
 
-// REGISTER NEW USER + GROUP
+// REGISTER
 app.post('/auth/register-group', async (req, res) => {
     const { username, password, groupCode, adminSecret } = req.body;
     try {
@@ -151,7 +154,7 @@ app.post('/auth/register-group', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// JOIN FOR NEW USERS (Login Screen)
+// JOIN (New User)
 app.post('/auth/join-group', async (req, res) => {
     const { username, password, groupCode } = req.body;
     try {
@@ -178,14 +181,13 @@ app.post('/auth/join-group', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 🚀 NEW: JOIN EXISTING GROUP (For Logged In Users)
+// JOIN (Existing User)
 app.post('/api/user/join-existing', ensureAuth, async (req, res) => {
     const { groupCode } = req.body;
     try {
         const group = await Group.findOne({ groupCode });
         if (!group) return res.status(404).json({ error: "Group not found" });
 
-        // Check if already in group
         if (req.user.joinedGroups.includes(group._id)) {
             return res.status(400).json({ error: "You are already in this group!" });
         }
@@ -198,20 +200,18 @@ app.post('/api/user/join-existing', ensureAuth, async (req, res) => {
             return res.json({ success: true, msg: "Request Sent to Admin." });
         }
 
-        // Add to group
         group.members.push(req.user._id);
         await group.save();
 
-        // Add to user
         req.user.joinedGroups.push(group._id);
-        req.user.activeGroup = group._id; // Switch immediately
+        req.user.activeGroup = group._id;
         await req.user.save();
 
         res.json({ success: true, msg: `Joined ${group.name}!` });
     } catch (e) { res.status(500).json({ error: "Join failed" }); }
 });
 
-// SWITCH ACTIVE GROUP
+// SWITCH GROUP
 app.post('/api/user/switch-group', ensureAuth, async (req, res) => {
     const { groupId } = req.body;
     const group = await Group.findById(groupId);
@@ -223,7 +223,6 @@ app.post('/api/user/switch-group', ensureAuth, async (req, res) => {
     res.json({ success: true, groupName: group.name });
 });
 
-// GET MY GROUPS
 app.get('/api/user/groups', ensureAuth, async (req, res) => {
     await req.user.populate('joinedGroups', 'name groupCode');
     res.json({ groups: req.user.joinedGroups, activeGroupId: req.user.activeGroup });
@@ -237,15 +236,18 @@ app.get('/api/expenses', ensureAuth, async (req, res) => {
     res.json(expenses);
 });
 
+// ADD / EDIT EXPENSE
 app.post('/api/expenses', ensureAuth, async (req, res) => {
     if (!req.user.activeGroup) return res.status(400).json({ error: "No Active Group" });
+    
+    // ✅ FIXED: Replaced 'getGroup' with direct DB call
     const group = await Group.findById(req.user.activeGroup);
     
-    // EDIT
     if (req.body.isEdit) {
         const oldExpense = await Expense.findById(req.body.expenseId);
         if (!oldExpense) return res.status(404).json({error: "Expense not found"});
         const updated = await Expense.findByIdAndUpdate(req.body.expenseId, req.body.newData, { new: true });
+        
         await History.create({
             groupCode: group.groupCode,
             action: 'EDIT',
@@ -255,7 +257,6 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
         return res.json({ success: true, msg: "Updated", expense: updated });
     }
 
-    // ADD
     let splitBetween = req.body.splitBetween || [];
     if (splitBetween.length === 0) splitBetween = group.members;
 
@@ -277,12 +278,13 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
     res.json(newExpense);
 });
 
-// DELETE
+// DELETE EXPENSE
 app.post('/api/expenses/delete', ensureAuth, async (req, res) => {
     const { expenseId } = req.body;
     const expense = await Expense.findById(expenseId);
     if (!expense) return res.status(404).json({ error: "Not found" });
 
+    // ✅ FIXED: Replaced 'getGroup'
     const group = await Group.findById(req.user.activeGroup);
     await Expense.findByIdAndDelete(expenseId);
 
@@ -315,7 +317,7 @@ app.post('/api/expenses/consume', ensureAuth, async (req, res) => {
     res.json({ success: true, expense });
 });
 
-// DEBTS
+// DEBTS REPORT
 app.get('/api/reports/debts', ensureAuth, async (req, res) => {
     if (!req.user.activeGroup) return res.json([]);
     const group = await Group.findById(req.user.activeGroup).populate('members', 'username');
@@ -360,7 +362,7 @@ app.get('/api/reports/debts', ensureAuth, async (req, res) => {
     res.json(settlements);
 });
 
-// ADMIN
+// ADMIN ROUTES
 app.get('/api/group/members', ensureAuth, async (req, res) => {
     const group = await Group.findById(req.user.activeGroup).populate('members', 'username isAdmin isBanned');
     res.json(group ? group.members : []);
