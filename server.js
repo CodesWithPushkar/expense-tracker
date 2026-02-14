@@ -231,8 +231,17 @@ app.get('/api/user/groups', ensureAuth, async (req, res) => {
 // === EXPENSES ===
 app.get('/api/expenses', ensureAuth, async (req, res) => {
     if (!req.user.activeGroup) return res.json([]);
+    
     const group = await Group.findById(req.user.activeGroup);
-    const expenses = await Expense.find({ groupCode: group.groupCode }).populate('paidBy', 'username').sort({ date: -1 });
+    
+    // 🛡️ SAFETY CHECK: If group is missing/deleted, stop here.
+    if (!group) {
+        return res.json([]); 
+    }
+
+    const expenses = await Expense.find({ groupCode: group.groupCode })
+        .populate('paidBy', 'username')
+        .sort({ date: -1 });
     res.json(expenses);
 });
 
