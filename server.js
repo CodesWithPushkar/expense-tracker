@@ -10,6 +10,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const admin = require('firebase-admin');
 const { splitExpenseEntries, parseExpenseEntry, resolveSplitTags } = require('./parser');
+const { calculateBalanceAudit, getId } = require('./balance');
 const {
   addDays,
   buildDailyInsights,
@@ -763,82 +764,52 @@ app.post('/api/expenses/consume', ensureAuth, async (req, res) => {
   res.json({ success: true, expense });
 });
 
+const getGroupBalanceAudit = async (group) => {
+  const expenses = await Expense.find({ groupCode: group.groupCode })
+    .select('_id amount paidBy splitBetween')
+    .lean();
+  const participantIds = new Set((group.members || []).map(getId).filter(Boolean));
+  expenses.forEach((expense) => {
+    if (expense.paidBy) participantIds.add(getId(expense.paidBy));
+    (expense.splitBetween || []).forEach((id) => participantIds.add(getId(id)));
+  });
+  const users = await User.find({ _id: { $in: [...participantIds] } })
+    .select('_id username nickname')
+    .lean();
+  const membersById = new Map(users.map((user) => [String(user._id), user]));
+  (group.members || []).forEach((member) => {
+    const id = getId(member);
+    if (id && !membersById.has(id)) membersById.set(id, typeof member === 'object' ? member : { _id: id });
+  });
+  const groupMembers = [...participantIds].map((id) => membersById.get(id) || { _id: id, username: 'Unknown' });
+  return calculateBalanceAudit({ expenses, groupMembers });
+};
+
+const getUserBalanceAudit = async (user) => {
+  if (!user.activeGroup) return null;
+  const group = await Group.findById(user.activeGroup).select('groupCode members').lean();
+  if (!group) return null;
+  return getGroupBalanceAudit(group);
+};
+
 app.get('/api/reports/debts', ensureAuth, async (req, res) => {
-  if (!req.user.activeGroup) return res.json([]);
+  const audit = await getUserBalanceAudit(req.user);
+  return res.json(audit ? audit.settlements : []);
+});
 
-  const group = await Group.findById(req.user.activeGroup).populate('members', 'username');
-  if (!group) return res.json([]);
-
-  const expenses = await Expense.find({ groupCode: group.groupCode });
-  const balances = {};
-  const usernames = {};
-  group.members.forEach((member) => {
-    balances[String(member._id)] = 0;
-    usernames[String(member._id)] = member.username;
-  });
-
-  expenses.forEach((exp) => {
-    const payerId = exp.paidBy ? exp.paidBy.toString() : null;
-    const involved = Array.isArray(exp.splitBetween) && exp.splitBetween.length > 0
-      ? exp.splitBetween.map((id) => id.toString())
-      : group.members.map((member) => member._id.toString());
-
-    if (involved.length <= 1) return;
-
-    const splitAmount = exp.amount / involved.length;
-    if (payerId && balances[payerId] !== undefined) balances[payerId] += Number(exp.amount);
-    involved.forEach((uid) => {
-      if (balances[uid] !== undefined) balances[uid] -= splitAmount;
-    });
-  });
-
-  const debtors = [];
-  const creditors = [];
-  Object.entries(balances).forEach(([uid, balance]) => {
-    if (balance < -0.01) debtors.push({ id: uid, amount: balance });
-    if (balance > 0.01) creditors.push({ id: uid, amount: balance });
-  });
-
-  debtors.sort((a, b) => a.amount - b.amount);
-  creditors.sort((a, b) => b.amount - a.amount);
-
-  const settlements = [];
-  let i = 0;
-  let j = 0;
-  while (i < debtors.length && j < creditors.length) {
-    const debtor = debtors[i];
-    const creditor = creditors[j];
-    const amount = Math.min(Math.abs(debtor.amount), creditor.amount);
-    settlements.push({
-      from: usernames[debtor.id] || 'Unknown',
-      to: usernames[creditor.id] || 'Unknown',
-      amount: Number(amount.toFixed(2))
-    });
-    debtor.amount += amount;
-    creditor.amount -= amount;
-    if (Math.abs(debtor.amount) < 0.01) i += 1;
-    if (creditor.amount < 0.01) j += 1;
+app.get('/api/reports/audit', ensureAuth, async (req, res) => {
+  const audit = await getUserBalanceAudit(req.user);
+  if (!audit) {
+    return res.json({ members: [], settlements: [], sumOfNets: 0 });
   }
-  res.json(settlements);
+  return res.json(audit);
 });
 
 app.get('/api/reports/my-balance', ensureAuth, async (req, res) => {
-  if (!req.user.activeGroup) return res.json({ balance: 0 });
-  const group = await Group.findById(req.user.activeGroup);
-  if (!group) return res.json({ balance: 0 });
-
-  const expenses = await Expense.find({ groupCode: group.groupCode });
-  let balance = 0;
-  for (const expense of expenses) {
-    const splitIds = Array.isArray(expense.splitBetween) && expense.splitBetween.length > 0
-      ? [...new Set(expense.splitBetween.map(String))]
-      : group.members.map(String);
-    if (splitIds.length <= 1) continue;
-    const share = Number(expense.amount) / splitIds.length;
-    if (String(expense.paidBy) === String(req.user._id)) balance += Number(expense.amount);
-    if (splitIds.includes(String(req.user._id))) balance -= share;
-  }
-  return res.json({ balance: Number(balance.toFixed(2)) });
+  const audit = await getUserBalanceAudit(req.user);
+  const userId = String(req.user._id);
+  const balance = audit ? audit.members.find((member) => member.id === userId)?.net || 0 : 0;
+  return res.json({ balance });
 });
 
 const parseInsightsRange = (from, to) => {
@@ -1304,23 +1275,9 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
     }
 
     if (cmd === 'balance') {
-      const debts = await Expense.find({ groupCode: group.groupCode });
-      const balances = {};
-      group.members.forEach((member) => { balances[String(member._id)] = 0; });
-      debts.forEach((exp) => {
-        const payerId = exp.paidBy ? exp.paidBy.toString() : null;
-        const involved = Array.isArray(exp.splitBetween) && exp.splitBetween.length > 0 ? exp.splitBetween.map((id) => String(id)) : group.members.map((member) => String(member._id));
-        if (involved.length <= 1) return;
-        const split = exp.amount / involved.length;
-        if (payerId && balances[payerId] !== undefined) balances[payerId] += Number(exp.amount);
-        involved.forEach((uid) => {
-          if (balances[uid] !== undefined) balances[uid] -= split;
-        });
-      });
-      const rows = group.members
-        .filter((member) => balances[String(member._id)] !== undefined)
-        .map((member) => `${member.username || member.nickname || 'Member'}: ₹${Number(balances[String(member._id)]).toFixed(2)}`);
-      await sendTelegramMessage(chatId, rows.join('\n') || 'No balances yet.');
+      const audit = await getGroupBalanceAudit(group);
+      const rows = audit.settlements.map(({ from, to, amount }) => `${from} owes ${to} ₹${amount.toFixed(2)}`);
+      await sendTelegramMessage(chatId, rows.join('\n') || 'Everyone is settled up.');
       return res.status(200).send('OK');
     }
 
