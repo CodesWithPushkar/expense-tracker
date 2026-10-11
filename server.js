@@ -79,6 +79,13 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
+const findUserByUsername = (username) => {
+  const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+  if (!normalizedUsername) return null;
+  const escapedUsername = normalizedUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return User.findOne({ username: { $regex: `^\\s*${escapedUsername}\\s*$`, $options: 'i' } });
+};
+
 const groupSchema = new mongoose.Schema({
   name: String,
   groupCode: { type: String, required: true, unique: true },
@@ -270,7 +277,7 @@ app.use(async (req, res, next) => {
 
 passport.use(new LocalStrategy(async (username, password, done) => {
   try {
-    const user = await User.findOne({ username });
+    const user = await findUserByUsername(username);
     if (!user) return done(null, false, { message: 'User not found' });
     if (user.isBanned) return done(null, false, { message: 'You are BANNED.' });
     const isMatch = await bcrypt.compare(password, user.password);
@@ -331,7 +338,7 @@ app.post('/auth/login', passport.authenticate('local'), async (req, res) => {
 app.post('/api/mobile/login', async (req, res) => {
   const { username, password } = req.body || {};
   try {
-    const user = await User.findOne({ username });
+    const user = await findUserByUsername(username);
     if (!user) return res.status(401).json({ error: 'User not found' });
     if (user.isBanned) return res.status(403).json({ error: 'User is banned' });
 
