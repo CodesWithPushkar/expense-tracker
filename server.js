@@ -10,6 +10,14 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const admin = require('firebase-admin');
 const { splitExpenseEntries, parseExpenseEntry, resolveSplitTags } = require('./parser');
+const {
+  addDays,
+  buildDailyInsights,
+  buildInsightsSummary,
+  dateKeyToUtcStart,
+  getInclusiveDayCount,
+  isDateKey
+} = require('./insights');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -111,6 +119,7 @@ const expenseSchema = new mongoose.Schema({
   telegramMessageId: Number,
   telegramUpdateId: Number
 });
+expenseSchema.index({ groupCode: 1, date: -1 });
 const Expense = mongoose.model('Expense', expenseSchema);
 
 const historySchema = new mongoose.Schema({
@@ -686,14 +695,15 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
     user: req.user._id
   });
 
-  await sendFcmAlert({
-    groupCode: group.groupCode,
-    excludeUserId: req.user._id,
-    title: 'Expense update',
-    body: `${req.user.username} added ${newExpense.description} ₹${newExpense.amount}`
-  });
-
   res.json(newExpense);
+  setImmediate(() => {
+    sendFcmAlert({
+      groupCode: group.groupCode,
+      excludeUserId: req.user._id,
+      title: 'Expense update',
+      body: `${req.user.username} added ${newExpense.description} ₹${newExpense.amount}`
+    }).catch((error) => console.warn('Expense push failed:', error.message));
+  });
 });
 
 app.post('/api/expenses/delete', ensureAuth, async (req, res) => {
@@ -829,6 +839,81 @@ app.get('/api/reports/my-balance', ensureAuth, async (req, res) => {
     if (splitIds.includes(String(req.user._id))) balance -= share;
   }
   return res.json({ balance: Number(balance.toFixed(2)) });
+});
+
+const parseInsightsRange = (from, to) => {
+  if (!isDateKey(from) || !isDateKey(to) || from > to) return null;
+  const dayCount = getInclusiveDayCount(from, to);
+  if (dayCount > 400) return null;
+  return {
+    from,
+    to,
+    start: dateKeyToUtcStart(from),
+    end: dateKeyToUtcStart(addDays(to, 1)),
+    dayCount
+  };
+};
+
+const loadInsightExpenses = (groupCode, from, to) => {
+  const start = dateKeyToUtcStart(from);
+  const end = dateKeyToUtcStart(addDays(to, 1));
+  return Expense.find({
+    groupCode,
+    $or: [
+      { date: { $gte: start, $lt: end } },
+      { date: null, createdAt: { $gte: start, $lt: end } }
+    ]
+  })
+    .select('_id description amount category date createdAt paidBy splitBetween')
+    .populate('paidBy', 'username nickname')
+    .lean();
+};
+
+app.get('/api/insights/daily', ensureAuth, async (req, res) => {
+  const range = parseInsightsRange(req.query.from, req.query.to);
+  if (!range) return res.status(400).json({ error: 'Valid from/to dates are required (maximum 400 days)' });
+  if (!req.user.activeGroup) return res.status(400).json({ error: 'No active group' });
+
+  const group = await Group.findById(req.user.activeGroup).populate('members', 'username nickname').lean();
+  if (!group) return res.status(404).json({ error: 'Active group not found' });
+  const expenses = await loadInsightExpenses(group.groupCode, range.from, range.to);
+  const mode = req.query.view === 'paid' ? 'paid' : 'share';
+  return res.json(buildDailyInsights({
+    expenses,
+    groupMembers: group.members || [],
+    userId: String(req.user._id),
+    from: range.from,
+    to: range.to,
+    mode
+  }));
+});
+
+app.get('/api/insights/summary', ensureAuth, async (req, res) => {
+  const period = req.query.period;
+  if (period !== 'week' && period !== 'month') {
+    return res.status(400).json({ error: 'period must be week or month' });
+  }
+  const range = parseInsightsRange(req.query.from, req.query.to);
+  if (!range) return res.status(400).json({ error: 'Valid from/to dates are required (maximum 400 days)' });
+  if (!req.user.activeGroup) return res.status(400).json({ error: 'No active group' });
+
+  const group = await Group.findById(req.user.activeGroup).populate('members', 'username nickname').lean();
+  if (!group) return res.status(404).json({ error: 'Active group not found' });
+  const previousFrom = addDays(range.from, -range.dayCount);
+  const previousTo = addDays(range.from, -1);
+  const expenses = await loadInsightExpenses(group.groupCode, previousFrom, range.to);
+  const mode = req.query.view === 'paid' ? 'paid' : 'share';
+  const allDays = buildDailyInsights({
+    expenses,
+    groupMembers: group.members || [],
+    userId: String(req.user._id),
+    from: previousFrom,
+    to: range.to,
+    mode
+  });
+  const daily = allDays.filter((day) => day.date >= range.from);
+  const previousDaily = allDays.filter((day) => day.date <= previousTo);
+  return res.json(buildInsightsSummary({ daily, previousDaily, period }));
 });
 
 app.get('/api/group/members', ensureAuth, async (req, res) => {
