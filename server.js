@@ -648,10 +648,27 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
   const description = typeof req.body.description === 'string' ? req.body.description.trim() : '';
   const amount = Number(req.body.amount);
   const splitInput = Array.isArray(req.body.splitBetween) ? req.body.splitBetween : [];
-  let splitBetween = splitInput.length > 0 ? splitInput : group.members.map((member) => member.toString());
+  const splitBetween = [...new Set(
+    (splitInput.length > 0 ? splitInput : group.members).map((member) => String(member))
+  )];
+  const validDate = req.body.date ? new Date(req.body.date) : new Date();
+
+  if (!description || !Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ error: 'Description and a positive amount are required' });
+  }
+  if (Number.isNaN(validDate.getTime())) {
+    return res.status(400).json({ error: 'A valid expense date is required' });
+  }
+  if (splitBetween.length === 0) {
+    return res.status(400).json({ error: 'Choose at least one group member to split with' });
+  }
+  const groupMemberIds = new Set(group.members.map((member) => String(member)));
+  if (splitBetween.some((memberId) => !groupMemberIds.has(memberId))) {
+    return res.status(400).json({ error: 'Split members must belong to the active group' });
+  }
 
   const normalizedDescription = normalizeText(description);
-  const sameDay = getKolkataDateKey(req.body.date || new Date());
+  const sameDay = getKolkataDateKey(validDate);
 
   const duplicates = await Expense.find({
     groupCode: group.groupCode,
@@ -674,18 +691,17 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
   }
 
   const newExpense = new Expense({
-    ...req.body,
     description,
     amount,
-    category: req.body.category || 'General',
-    source: req.body.source || 'app',
-    date: req.body.date || new Date(),
-    createdAt: req.body.createdAt || new Date(),
+    category: typeof req.body.category === 'string' && req.body.category.trim()
+      ? req.body.category.trim()
+      : 'General',
+    source: 'app',
+    date: validDate,
+    createdAt: new Date(),
     paidBy: req.user._id,
     groupCode: group.groupCode,
-    splitBetween,
-    telegramMessageId: req.body.telegramMessageId || undefined,
-    telegramUpdateId: req.body.telegramUpdateId || undefined
+    splitBetween
   });
   await newExpense.save();
 
@@ -696,6 +712,7 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
     user: req.user._id
   });
 
+  await newExpense.populate('paidBy', 'username nickname');
   res.json(newExpense);
   setImmediate(() => {
     sendFcmAlert({
@@ -1416,6 +1433,24 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
   }
 
   return res.status(200).send('OK');
+});
+
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next(error);
+  if (res.headersSent) return next(error);
+
+  const candidateStatus = error.statusCode || error.status;
+  const status = Number.isInteger(candidateStatus) && candidateStatus >= 400 && candidateStatus <= 599
+    ? candidateStatus
+    : 500;
+
+  if (status >= 500) {
+    console.error(`Unhandled API error for ${req.method} ${req.path}:`, error.stack || error.message);
+  }
+
+  return res.status(status).json({
+    error: status >= 500 ? 'Internal server error' : error.message
+  });
 });
 
 const initializeTelegram = async () => {
