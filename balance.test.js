@@ -56,3 +56,28 @@ test('keeps removed split members in the balance and balances nets to zero', () 
   assert.equal(audit.members.find((member) => member.id === 'former-member').totalShare, 50);
   assert.equal(audit.sumOfNets, 0);
 });
+
+test('combines expenses with different payers and split groups into the correct net debts', () => {
+  const audit = calculateBalanceAudit({
+    expenses: [
+      expense({ amount: 100, paidBy: { _id: 'payer', username: 'Payer' }, splitBetween: ['payer', 'one', 'two'] }),
+      expense({ amount: 75, paidBy: { _id: 'one', username: 'One' }, splitBetween: ['one', 'two'] })
+    ],
+    groupMembers: members
+  });
+
+  assert.deepEqual(
+    audit.members.map(({ id, net }) => [id, net]),
+    [
+      ['payer', 66.66],
+      ['one', 4.17],
+      ['two', -70.83],
+      ['three', 0]
+    ]
+  );
+  assert.deepEqual(audit.settlements, [
+    { from: 'Two', to: 'Payer', amount: 66.66 },
+    { from: 'Two', to: 'One', amount: 4.17 }
+  ]);
+  assert.equal(audit.sumOfNets, 0);
+});
