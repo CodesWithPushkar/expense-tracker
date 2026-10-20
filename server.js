@@ -244,15 +244,6 @@ const sendFcmAlert = async ({ groupCode, excludeUserId, targetUserId, title, bod
   }
 };
 
-const getExpenseDuplicateKey = ({ description, amount, paidBy, splitBetween, groupCode, date }) => {
-  const amountNumber = Number(amount);
-  const normalizedDescription = normalizeText(description);
-  const splitSet = [...new Set((splitBetween || []).map((id) => String(id)).sort())].join('|');
-  const effectiveDate = getKolkataDateKey(date || new Date());
-
-  return [groupCode, effectiveDate, normalizedDescription, String(amountNumber), String(paidBy), splitSet].join('::');
-};
-
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -665,29 +656,6 @@ app.post('/api/expenses', ensureAuth, async (req, res) => {
   const groupMemberIds = new Set(group.members.map((member) => String(member)));
   if (splitBetween.some((memberId) => !groupMemberIds.has(memberId))) {
     return res.status(400).json({ error: 'Split members must belong to the active group' });
-  }
-
-  const normalizedDescription = normalizeText(description);
-  const sameDay = getKolkataDateKey(validDate);
-
-  const duplicates = await Expense.find({
-    groupCode: group.groupCode,
-    amount,
-    paidBy: req.user._id,
-    date: {
-      $gte: new Date(`${sameDay}T00:00:00+05:30`),
-      $lt: new Date(`${sameDay}T23:59:59.999+05:30`)
-    }
-  });
-
-  const match = duplicates.find((expense) => {
-    const expenseSplit = [...new Set((expense.splitBetween || []).map((id) => String(id)).sort())].join('|');
-    const candidateSplit = [...new Set(splitBetween.map((id) => String(id)).sort())].join('|');
-    return normalizeText(expense.description) === normalizedDescription && String(expense.paidBy) === String(req.user._id) && String(expense.amount) === String(amount) && expenseSplit === candidateSplit;
-  });
-
-  if (match && !req.body.force) {
-    return res.status(409).json({ duplicate: true, existing: match });
   }
 
   const newExpense = new Expense({
@@ -1395,23 +1363,6 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
       telegramMessageId: message.message_id,
       telegramUpdateId: update.update_id
     });
-
-    const sameDay = getKolkataDateKey(new Date(message.date * 1000));
-    const existing = await Expense.findOne({
-      groupCode: group.groupCode,
-      amount: parsed.amount,
-      paidBy: senderUser._id,
-      description: { $regex: `^${parsed.description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
-      date: {
-        $gte: new Date(`${sameDay}T00:00:00+05:30`),
-        $lt: new Date(`${sameDay}T23:59:59.999+05:30`)
-      }
-    });
-
-    if (existing) {
-      failedEntries.push(`${parsed.description} ₹${parsed.amount} (already added today)`);
-      continue;
-    }
 
     await newExpense.save();
     validEntries.push(newExpense);
