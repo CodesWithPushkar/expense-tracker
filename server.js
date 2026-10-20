@@ -1099,7 +1099,7 @@ const setTelegramWebhook = async () => {
   if (!TELEGRAM_BOT_TOKEN || !PUBLIC_URL) return;
 
   const endpoint = `${PUBLIC_URL.replace(/\/$/, '')}/telegram/webhook/${TELEGRAM_WEBHOOK_SECRET}`;
-  await telegramApi('setWebhook', { url: endpoint });
+  return telegramApi('setWebhook', { url: endpoint });
 };
 
 const sendTelegramMessage = async (chatId, text, replyMarkup = null) => {
@@ -1406,7 +1406,19 @@ app.use((error, req, res, next) => {
 
 const initializeTelegram = async () => {
   if (!TELEGRAM_BOT_TOKEN || !PUBLIC_URL) return;
-  await setTelegramWebhook();
+  try {
+    const result = await setTelegramWebhook();
+    if (!result || !result.ok) {
+      throw new Error(result && result.description ? result.description : 'Telegram did not confirm webhook setup.');
+    }
+    console.log('✅ Telegram webhook configured');
+  } catch (error) {
+    console.error('⚠️ Telegram webhook setup failed; the API will continue running:', error.message);
+    const retryTimer = setTimeout(() => {
+      void initializeTelegram();
+    }, 60_000);
+    retryTimer.unref();
+  }
 };
 
 initializeTelegram();
