@@ -9,7 +9,7 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const admin = require('firebase-admin');
-const { splitExpenseEntries, parseExpenseEntry, resolveSplitTags } = require('./parser');
+const { splitExpenseEntries, parseExpenseEntry, parseTelegramCommand, resolveSplitTags } = require('./parser');
 const { calculateBalanceAudit, getId } = require('./balance');
 const {
   addDays,
@@ -1105,7 +1105,7 @@ const setTelegramWebhook = async () => {
 const sendTelegramMessage = async (chatId, text, replyMarkup = null) => {
   if (!chatId || !TELEGRAM_BOT_TOKEN) return null;
 
-  const payload = { chat_id: chatId, text, parse_mode: 'HTML' };
+  const payload = { chat_id: chatId, text };
   if (replyMarkup) payload.reply_markup = replyMarkup;
   return telegramApi('sendMessage', payload);
 };
@@ -1165,7 +1165,8 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
             body: `${user.nickname || user.username} removed ${expense.description} ₹${expense.amount}`
           });
       }
-      await telegramApi('answerCallbackQuery', {
+      return res.status(200).json({
+        method: 'answerCallbackQuery',
         callback_query_id: callbackQuery.id,
         text: expense && user && group && isWithinUndoWindow ? 'Expense removed.' : 'This undo action has expired or is unavailable.'
       });
@@ -1178,15 +1179,14 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
           { upsert: true, new: true }
         );
       }
-      await telegramApi('answerCallbackQuery', {
+      return res.status(200).json({
+        method: 'answerCallbackQuery',
         callback_query_id: callbackQuery.id,
         text: group ? 'Marked as nothing today.' : 'This action is unavailable for your account.'
       });
     } else {
-      await telegramApi('answerCallbackQuery', { callback_query_id: callbackQuery.id });
+      return res.status(200).json({ method: 'answerCallbackQuery', callback_query_id: callbackQuery.id });
     }
-
-    return res.status(200).send('OK');
   }
 
   if (!message || !message.text) return res.status(200).send('OK');
@@ -1194,6 +1194,11 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
   const updateId = Number(update.update_id || 0);
   const chatId = Number(message.chat && message.chat.id);
   const messageId = Number(message.message_id || 0);
+  const reply = (text, replyMarkup = null) => {
+    const payload = { chat_id: chatId, text };
+    if (replyMarkup) payload.reply_markup = replyMarkup;
+    return res.status(200).json({ method: 'sendMessage', ...payload });
+  };
   const seen = await isTelegramUpdateSeen(updateId, chatId, messageId);
   if (seen) return res.status(200).send('OK');
 
@@ -1203,41 +1208,36 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
     const startMatch = text.match(/^\/start(?:@\w+)?(?:\s+(\d{6}))?$/i);
     const code = startMatch && startMatch[1];
     if (!code) {
-      await sendTelegramMessage(chatId, 'Open Settings → Connect Telegram in the app and send the generated code with /start.');
-      return res.status(200).send('OK');
+      return reply('Open Settings → Connect Telegram in the app and send the generated code with /start.');
     }
 
     const linkRecord = await TelegramLinkCode.findOne({ code });
     if (linkRecord) {
       await User.findByIdAndUpdate(linkRecord.userId, { telegramChatId: String(chatId) });
       await TelegramLinkCode.deleteOne({ _id: linkRecord._id });
-      await sendTelegramMessage(chatId, '✅ Telegram linked successfully.');
+      return reply('✅ Telegram linked successfully.');
     } else {
-      await sendTelegramMessage(chatId, 'This link code is invalid or expired.');
+      return reply('This link code is invalid or expired.');
     }
-    return res.status(200).send('OK');
   }
 
   const senderUser = await User.findOne({ telegramChatId: String(chatId) });
   if (!senderUser) {
-    await sendTelegramMessage(chatId, 'Please connect this chat in the app first via Settings → Connect Telegram.');
-    return res.status(200).send('OK');
+    return reply('Please connect this chat in the app first via Settings → Connect Telegram.');
   }
 
   if (!senderUser.activeGroup) {
-    await sendTelegramMessage(chatId, 'You do not have an active group yet.');
-    return res.status(200).send('OK');
+    return reply('You do not have an active group yet.');
   }
 
   const group = await Group.findById(senderUser.activeGroup).populate('members', 'username nickname _id');
   if (!group) {
-    await sendTelegramMessage(chatId, 'Your active group is missing.');
-    return res.status(200).send('OK');
+    return reply('Your active group is missing.');
   }
 
-  const commandMatch = text.match(/^\/(\w+)(?:\s+(.*))?$/);
-  if (commandMatch) {
-    const [, cmd, argumentText] = commandMatch;
+  const command = parseTelegramCommand(text);
+  if (command) {
+    const { command: cmd, argumentText } = command;
 
     if (cmd === 'today') {
       const todayKey = getKolkataDateKey(new Date());
@@ -1245,31 +1245,28 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
       const end = new Date(`${todayKey}T23:59:59.999+05:30`);
       const expenses = await Expense.find({ groupCode: group.groupCode, date: { $gte: start, $lt: end } }).populate('paidBy', 'username nickname');
       if (!expenses.length) {
-        await sendTelegramMessage(chatId, 'No expenses added today.');
+        return reply('No expenses added today.');
       } else {
         const lines = expenses.map((expense) => `${expense.description} ₹${expense.amount} • ${expense.paidBy && (expense.paidBy.nickname || expense.paidBy.username)}`);
-        await sendTelegramMessage(chatId, `Today:\n${lines.join('\n')}`);
+        return reply(`Today:\n${lines.join('\n')}`);
       }
-      return res.status(200).send('OK');
     }
 
     if (cmd === 'members') {
       const names = group.members.map((member) => `${member.username || member.nickname || 'Member'}`).join(', ');
-      await sendTelegramMessage(chatId, `Members: ${names}`);
-      return res.status(200).send('OK');
+      return reply(`Members: ${names}`);
     }
 
     if (cmd === 'balance') {
       const audit = await getGroupBalanceAudit(group);
       const rows = audit.settlements.map(({ from, to, amount }) => `${from} owes ${to} ₹${amount.toFixed(2)}`);
-      await sendTelegramMessage(chatId, rows.join('\n') || 'Everyone is settled up.');
-      return res.status(200).send('OK');
+      return reply(rows.join('\n') || 'Everyone is settled up.');
     }
 
     if (cmd === 'undo') {
       const expense = await Expense.findOne({ groupCode: group.groupCode, paidBy: senderUser._id }).sort({ date: -1 });
       if (!expense) {
-        await sendTelegramMessage(chatId, 'No recent expense found to undo.');
+        return reply('No recent expense found to undo.');
       } else {
         await Expense.findByIdAndDelete(expense._id);
         await History.create({
@@ -1278,16 +1275,14 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
           message: `deleted "${expense.description}" via Telegram`,
           user: senderUser._id
         });
-        await sendTelegramMessage(chatId, '✅ Last expense removed.');
+        return reply('✅ Last expense removed.');
       }
-      return res.status(200).send('OK');
     }
 
     if (cmd === 'nick') {
       const nickname = (argumentText || '').trim();
       if (!nickname || nickname.toLowerCase() === 'me' || nickname.toLowerCase() === 'all') {
-        await sendTelegramMessage(chatId, 'Nickname must not be “me” or “all”.');
-        return res.status(200).send('OK');
+        return reply('Nickname must not be “me” or “all”.');
       }
 
       const existing = await User.findOne({
@@ -1296,13 +1291,11 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
         _id: { $ne: senderUser._id }
       });
       if (existing) {
-        await sendTelegramMessage(chatId, 'That nickname is already taken in this group.');
-        return res.status(200).send('OK');
+        return reply('That nickname is already taken in this group.');
       }
       senderUser.nickname = nickname;
       await senderUser.save();
-      await sendTelegramMessage(chatId, `✅ Nickname updated to ${nickname}.`);
-      return res.status(200).send('OK');
+      return reply(`✅ Nickname updated to ${nickname}.`);
     }
 
     if (cmd === 'help') {
@@ -1315,8 +1308,7 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
         '/help — show help',
         'Expense format examples: @all milk 20, @rahul dal 40, @me coffee 50'
       ].join('\n');
-      await sendTelegramMessage(chatId, helpText);
-      return res.status(200).send('OK');
+      return reply(helpText);
     }
   }
 
@@ -1368,22 +1360,15 @@ app.post('/telegram/webhook/:secret', async (req, res) => {
     validEntries.push(newExpense);
   }
 
-  if (validEntries.length) {
-    const savedLines = validEntries.map((expense) => {
-      const parts = expense.splitBetween && expense.splitBetween.length > 0 ? expense.splitBetween.length > 1 ? `${expense.splitBetween.length} people` : 'personal' : 'all';
-      const stamp = new Date(expense.date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' });
-      return `✅ ${expense.description} ₹${expense.amount} • ${parts} • ${stamp}`;
-    });
+  const savedLines = validEntries.map((expense) => {
+    const parts = expense.splitBetween && expense.splitBetween.length > 0 ? expense.splitBetween.length > 1 ? `${expense.splitBetween.length} people` : 'personal' : 'all';
+    const stamp = new Date(expense.date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' });
+    return `✅ ${expense.description} ₹${expense.amount} • ${parts} • ${stamp}`;
+  });
+  const responseLines = [...savedLines];
+  if (failedEntries.length) responseLines.push(`Could not save:\n${failedEntries.join('\n')}`);
 
-    await sendTelegramMessage(chatId, savedLines.join('\n'));
-  }
-
-  if (failedEntries.length) {
-    const failText = failedEntries.length ? `Could not save:\n${failedEntries.join('\n')}` : '';
-    await sendTelegramMessage(chatId, failText);
-  }
-
-  return res.status(200).send('OK');
+  return reply(responseLines.join('\n\n') || 'No expense entries found. Use /help for examples.');
 });
 
 app.use((error, req, res, next) => {

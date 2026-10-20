@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { splitExpenseEntries, parseExpenseEntry, parseExpenseText, resolveSplitTags } = require('./parser');
+const { splitExpenseEntries, parseExpenseEntry, parseExpenseText, parseTelegramCommand, resolveSplitTags } = require('./parser');
 
 const members = [
   { _id: 'u1', username: 'rahul', nickname: 'R' },
@@ -38,6 +38,13 @@ test('parseExpenseText handles multiple entries and rupee prefixes', () => {
   assert.equal(parsed[0].description, 'green tea');
   assert.equal(parsed[1].amount, 30);
   assert.equal(parsed[2].amount, 50.5);
+});
+
+test('parseTelegramCommand recognizes balance and bot-addressed commands', () => {
+  assert.deepEqual(parseTelegramCommand('/balance'), { command: 'balance', argumentText: '' });
+  assert.deepEqual(parseTelegramCommand('/BALANCE@ExpenseTrackerBot'), { command: 'balance', argumentText: '' });
+  assert.deepEqual(parseTelegramCommand('/nick My Nickname'), { command: 'nick', argumentText: 'My Nickname' });
+  assert.equal(parseTelegramCommand('@me milk 20'), null);
 });
 
 test('resolveSplitTags handles all, me, exact and prefix matches', () => {
