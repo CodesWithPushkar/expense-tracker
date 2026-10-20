@@ -87,6 +87,12 @@ function parseExpenseText(rawText) {
     .filter(Boolean);
 }
 
+function parseTelegramCommand(text) {
+  const match = String(text ?? '').trim().match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/i);
+  if (!match) return null;
+  return { command: match[1].toLowerCase(), argumentText: (match[2] || '').trim() };
+}
+
 function normalizeTag(tag) {
   return String(tag || '').replace(/^@/, '').trim().toLowerCase();
 }
@@ -168,6 +174,7 @@ module.exports = {
   splitExpenseEntries,
   parseExpenseEntry,
   parseExpenseText,
+  parseTelegramCommand,
   resolveSplitTags,
   parseCurrencyAmount
 };
