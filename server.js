@@ -99,6 +99,10 @@ const groupSchema = new mongoose.Schema({
   name: String,
   groupCode: { type: String, required: true, unique: true },
   isRestricted: { type: Boolean, default: false },
+  quickAddSuggestions: {
+    type: [{ description: { type: String, trim: true }, amount: { type: Number, min: 0.01 } }],
+    default: () => [{ description: 'Milk', amount: 20 }, { description: 'Snacks', amount: 20 }]
+  },
   members: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   pendingMembers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 });
@@ -997,27 +1001,42 @@ app.get('/api/expenses/catchup', ensureAuth, async (req, res) => {
 
 app.get('/api/expenses/suggestions', ensureAuth, async (req, res) => {
   if (!req.user.activeGroup) return res.json([]);
-  const group = await Group.findById(req.user.activeGroup);
+  const group = await Group.findById(req.user.activeGroup).select('quickAddSuggestions').lean();
   if (!group) return res.json([]);
 
-  const expenses = await Expense.find({ groupCode: group.groupCode, paidBy: req.user._id }).sort({ date: -1 });
-  const buckets = new Map();
-  expenses.forEach((exp) => {
-    const key = normalizeText(exp.description);
-    if (!key) return;
-    if (!buckets.has(key)) {
-      buckets.set(key, { description: exp.description.trim(), amount: exp.amount, count: 0 });
+  const suggestions = group.quickAddSuggestions === undefined
+    ? [{ description: 'Milk', amount: 20 }, { description: 'Snacks', amount: 20 }]
+    : group.quickAddSuggestions;
+  res.json(suggestions.map(({ description, amount }) => ({ description, amount })));
+});
+
+app.put('/api/admin/quick-add', ensureAdmin, async (req, res) => {
+  if (!req.user.activeGroup) return res.status(400).json({ error: 'No Active Group' });
+
+  const { suggestions } = req.body || {};
+  if (!Array.isArray(suggestions) || suggestions.length > 12) {
+    return res.status(400).json({ error: 'Provide up to 12 quick-add suggestions' });
+  }
+
+  const normalizedSuggestions = [];
+  for (const suggestion of suggestions) {
+    const description = typeof suggestion?.description === 'string' ? suggestion.description.trim() : '';
+    const amount = Number(suggestion?.amount);
+    if (!description || description.length > 60 || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) {
+      return res.status(400).json({ error: 'Each quick-add item needs a description (up to 60 characters) and a positive amount' });
     }
-    buckets.get(key).count += 1;
-    buckets.get(key).amount = exp.amount;
-  });
+    normalizedSuggestions.push({ description, amount });
+  }
 
-  const suggestions = [...buckets.values()]
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 12)
-    .map(({ description, amount }) => ({ description, amount }));
+  const group = await Group.findById(req.user.activeGroup);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+  if (!group.members.some((memberId) => String(memberId) === String(req.user._id))) {
+    return res.status(403).json({ error: 'You must belong to the active group to manage its quick-add suggestions' });
+  }
+  group.quickAddSuggestions = normalizedSuggestions;
+  await group.save();
 
-  res.json(suggestions);
+  return res.json({ success: true, suggestions: normalizedSuggestions });
 });
 
 app.get('/api/cron/reminders', async (req, res) => {
